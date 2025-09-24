@@ -1,0 +1,106 @@
+from machine import Pin, PWM
+import utime
+
+# IR Sensors: GP2 (Leftmost), GP3, GP4, GP5, GP6 (Rightmost)
+IR_PINS = [2, 3, 4, 5, 6]
+
+# Motor Driver Pins
+AIN1 = Pin(10, Pin.OUT)
+AIN2 = Pin(11, Pin.OUT)
+PWMA = PWM(Pin(12))
+BIN1 = Pin(13, Pin.OUT)
+BIN2 = Pin(14, Pin.OUT)
+PWMB = PWM(Pin(15))
+STBY = Pin(36, Pin.OUT)  # Standby control if required
+
+# Motor PWM setup
+def setup_pwm(pwm_pin):
+    pwm_pin.freq(1000)
+    pwm_pin.duty_u16(0)
+
+setup_pwm(PWMA)
+setup_pwm(PWMB)
+
+# Speed constants (16-bit: max=65535)
+BASE_SPEED = 44000
+TURN_CORRECTION = 23000
+FAST_SPEED = 65000
+SLOW_SPEED = 36000
+
+# IR Sensor weights (adjust if needed)
+SENSOR_WEIGHTS = [-2, -1, 0, 1, 2]
+
+# Set Motor Function
+def set_motor(left, right):
+    if left > 0:
+        AIN1.value(1)
+        AIN2.value(0)
+        PWMA.duty_u16(int(min(left, 65535)))
+    elif left < 0:
+        AIN1.value(0)
+        AIN2.value(1)
+        PWMA.duty_u16(int(min(-left, 65535)))
+    else:
+        PWMA.duty_u16(0)
+
+    if right > 0:
+        BIN1.value(1)
+        BIN2.value(0)
+        PWMB.duty_u16(int(min(right, 65535)))
+    elif right < 0:
+        BIN1.value(0)
+        BIN2.value(1)
+        PWMB.duty_u16(int(min(-right, 65535)))
+    else:
+        PWMB.duty_u16(0)
+
+# IR array reading
+def read_ir_array():
+    return [Pin(pin, Pin.IN).value() for pin in IR_PINS]
+
+# Calculate line error (proportional only)
+def get_error(ir_vals):
+    numerator, denominator = 0, 0
+    for i, val in enumerate(ir_vals):
+        if val == 0:  # 0 = black line detection
+            numerator += SENSOR_WEIGHTS[i]
+            denominator += 1
+    if denominator == 0:
+        return None  # Line lost
+    return numerator / denominator
+
+def line_follow():
+    STBY.value(1)  # Ensure motors are enabled if using STBY
+    last_error = 0
+    while True:
+        ir_vals = read_ir_array()
+        error = get_error(ir_vals)
+
+        # If line lost, spin to search
+        if error is None:
+            set_motor(-SLOW_SPEED, SLOW_SPEED)
+            utime.sleep_ms(80)
+            continue
+
+        # Tune speeds for straight line vs curves
+        if abs(error) < 0.5:
+            base = FAST_SPEED
+            correction = TURN_CORRECTION / 2
+        else:
+            base = BASE_SPEED
+            correction = TURN_CORRECTION
+
+        # Steering logic
+        left_speed = base + correction * (-error)
+        right_speed = base + correction * (error)
+
+        # Clamp speeds
+        left_speed = max(0, min(65535, left_speed))
+        right_speed = max(0, min(65535, right_speed))
+
+        set_motor(left_speed, right_speed)
+        utime.sleep_ms(10)
+
+# MAIN
+print("Fast and accurate line follower starting!")
+line_follow()
